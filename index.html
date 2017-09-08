@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <style type="text/css">
+
+body {
+    color: #333;
+    font-family: Verdana, Geneva, Tahoma, sans-serif;
+}
+
+.remark-slide-content h1 {
+    font-size: 1.4em;
+    margin-bottom: 0.5em;
+}
+
+.remark-slide-content h2 {
+    font-size: 1.7em;
+    margin-bottom: 0.2em;
+}
+
+    </style>
+  </head>
+  <body>
+     <textarea id="source">
+class: center, middle
+
+# The most common mistakes when writing your Rust wrapper around a C library
+
+<div style="position: absolute; bottom: 5%; right: 5%;">
+.right[
+    twitter.com/tomaka17 <img src="twitter.png" alt="Twitter" height="16" /><br />
+    github.com/tomaka <img src="github.png" alt="GitHub" height="16" /><br />
+]
+</div>
+
+---
+
+# Introduction
+
+People write wrappers around C libraries.
+
+Rust has rules. When you call C code, you must enforce these rules yourself. Unfortunately people
+make mistakes when trying to enforce these rules.
+
+---
+
+## Mistake #1
+# Leak safety
+
+---
+
+## Mistake #2
+# Catching panics in variables
+
+---
+
+## Mistake #3
+# Assuming that trait implementations are bug-free
+
+Try to spot the problem:
+
+```rust
+fn foo<T: Deref<String>>(string_arg: &T) {
+    unsafe {
+        let mut vec = Vec::with_capacity(string_arg.len());
+        ptr::copy(string_arg.as_ptr(), vec.as_mut_ptr(),
+                  string_arg.len());
+        dst.set_len(string_arg.len());
+
+        // ... do something with the Vec
+    }
+}
+```
+
+Hint:
+
+```rust
+let a = string_arg.len();
+let b = string_arg.len();
+// a == b ?
+```
+
+---
+
+## Mistake #3
+# Assuming that trait implementations are bug-free
+
+What if I call `foo()` with a `MaliciousPointer`?
+
+```rust
+struct MaliciousPointer {
+    string1: String,
+    string2: String,
+}
+
+impl Deref for MaliciousPointer {
+    type Target = String;
+    fn deref(&self) -> &String {
+        if random() < 0.5 { &self.string1 }
+        else { &self.string2 }
+    }
+}
+```
+
+---
+
+## Mistake #4
+# Hidden global variables
+
+Example: OpenAL.
+
+```rust
+extern {
+    // Sets the current context. Only one context can be current
+    // at any given time. All commands apply to the current context.
+    ALCboolean alcMakeContextCurrent(context: *mut ALCcontext);
+}
+```
+
+This is a global variable hidden inside the OpenAL library!
+
+- This API is not thread-safe, as two different threads can't safely operate on two different
+  contexts.
+- Cannot be made thread-safe with a lock in your library.
+
+This C API **cannot** be wrapped safely because it was badly designed.
+
+???
+
+Provide explanations about the C API.
+
+In order to use OpenAL, you first create what is called a "context" and set it as current. Then all
+the functions that you call apply on the current context.
+
+---
+
+## Mistake #5
+# Reading some primitives can cause undefined behaviour
+
+Concerned: `f32`s, `f64`s, `bool`s and `char`s
+
+Rules:
+- `bool`s must always be either `0` or `1` <small>(actually, this is unspecified)</small>.
+- `char`s must be a valid unicode scalar value</small>.
+- Floating-points must never contain signalling NaNs.
+
+```rust
+// can be undefined behaviour!
+let b: f32 = unsafe { mem::uninitialized() };
+
+// actually undefined behaviour (bad!)
+let b: f32 = unsafe { mem::transmute(0x7f800001) };
+```
+
+Example situations:
+
+- Do not `transmute` a user-provided sequence of bytes.
+- Beware that mapped physical memory may become garbage.
+
+???
+
+By extension, arrays and structs that contain these types are also concerned.
+
+You must make sure that these rules are enforced when you transmute.
+
+Mention Vulkan w.r.t physical memory becoming garbage.
+
+---
+
+## Mistake #6
+# Assuming that structs and enums have a certain layout
+
+Example:
+
+```rust
+struct Foo {
+    a: u8,
+    b: u32,
+}
+```
+
+The compiler can optimize this struct's layout, and `a` may end up being **after** `b` in memory.
+
+Use `#[repr(C)]` to force the layout.
+
+```rust
+#[repr(C)]
+struct Foo {
+    a: u8,
+    b: u32,
+}
+```
+
+???
+
+The compiler will warn you if you try to call an external function with a struct that isn't
+`repr(C)`. But it won't warn you if you perform transmutes or pointer casts.
+
+---
+
+# Advice #1: 
+
+Leak-safety (aka. "pre-pooping your pants")
+Catching panics in variables
+Setting global variables provided by the C library and forgetting that multiple different versions of your library can run at the same time, or can be used together with other libraries that set the same global variables
+Relying on the fact that safe trait implementations (like PartialEq, Eq, Deref, ...) are bug-free, while they are not necessarily
+Panic safety
+Reading f32s/f64s (and bools and chars) from uninitialized memory can cause undefined behavior
+Casting from *const to *mut (although I need to read the exact rules for this one first)
+Transmuting from a non-repr(C) struct or assuming it has a certain layout
+
+---
+class: center, middle
+
+# Conclusion
+
+**Read the rustonomicon: https://doc.rust-lang.org/nomicon/**
+
+
+---
+class: center, middle
+
+# Thank you
+
+<div style="position: absolute; bottom: 5%; right: 5%;">
+.right[
+    twitter.com/tomaka17 <img src="twitter.png" alt="Twitter" height="16" /><br />
+    github.com/tomaka <img src="github.png" alt="GitHub" height="16" /><br />
+]
+</div>
+
+<div style="position: absolute; bottom: 5%; left: 5%;">
+.left[
+    <img src="patreon.svg" alt="Patreon.com" height="16" /> patreon.com/tomaka<br />
+    <small>(by the way, I'm looking for a job)</small>
+]
+</div>
+
+???
+
+That's it! Thank you!
+
+    </textarea>
+     <script src="remark.min.js">
+    </script>
+    <script>
+       var slideshow = remark.create();
+    </script>
+  </body>
+</html>
+
+
