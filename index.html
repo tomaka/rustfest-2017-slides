@@ -2,6 +2,7 @@
 <html>
   <head>
     <style type="text/css">
+@import url('https://fonts.googleapis.com/css?family=Dosis');
 
 body {
     color: #333;
@@ -18,13 +19,27 @@ body {
     margin-bottom: 0.2em;
 }
 
+.nastiness {
+    display: block;
+    font-family: 'Dosis', cursive;
+    font-size: 1.1em;
+    position: absolute;
+    transform: rotate(-7deg);
+    top: 4%;
+    left: 80%;
+}
+
+.nastiness::before {
+    content: "Nastiness: ";
+}
+
     </style>
   </head>
   <body>
      <textarea id="source">
 class: center, middle
 
-# The most common mistakes when writing your Rust wrapper around a C library
+# Advices and common mistakes when writing your Rust wrapper around a C library
 
 <div style="position: absolute; bottom: 5%; right: 5%;">
 .right[
@@ -47,6 +62,8 @@ make mistakes when trying to enforce these rules.
 ## Mistake #1
 # Leak safety
 
+.nastiness[<span style="color: #BB0000;">high</span>]
+
 ---
 
 ## Mistake #2
@@ -56,6 +73,8 @@ make mistakes when trying to enforce these rules.
 
 ## Mistake #3
 # Assuming that trait implementations are bug-free
+
+.nastiness[<span style="color: #BBBB00;">medium</span>]
 
 Try to spot the problem:
 
@@ -85,6 +104,8 @@ let b = string_arg.len();
 ## Mistake #3
 # Assuming that trait implementations are bug-free
 
+.nastiness[<span style="color: #BBBB00;">medium</span>]
+
 What if I call `foo()` with a `MaliciousPointer`?
 
 ```rust
@@ -107,55 +128,67 @@ impl Deref for MaliciousPointer {
 ## Mistake #4
 # Hidden global variables
 
-Example: OpenAL.
+.nastiness[<span style="color: #BBBB00;">medium</span>]
+
+Example: *OpenAL*, a sound playback library.
 
 ```rust
 extern {
     // Sets the current context. Only one context can be current
     // at any given time. All commands apply to the current context.
-    ALCboolean alcMakeContextCurrent(context: *mut ALCcontext);
+    fn alcMakeContextCurrent(ctxt: *mut ALCcontext) -> ALCboolean;
 }
 ```
 
 This is a global variable hidden inside the OpenAL library!
 
-- This API is not thread-safe, as two different threads can't safely operate on two different
-  contexts.
-- Cannot be made thread-safe with a lock in your library.
+This design is not thread-safe (at all). None of the possible work-arounds is perfectly safe.<br />
+*OpenAL* **cannot** be wrapped safely, because of its design.
 
-This C API **cannot** be wrapped safely because it was badly designed.
+<hr />
+
+Other examples: OpenGL, POSIX signals, Xlib (`XSetErrorHandler`), ...
 
 ???
 
-Provide explanations about the C API.
+In order to use OpenAL, you first create what is called a "context" and set this context as
+current. Then all the functions that you call apply on the current context.
 
-In order to use OpenAL, you first create what is called a "context" and set it as current. Then all
-the functions that you call apply on the current context.
+If you think about it, the variable that stores the "current context" is essentially a global
+variable.
+
+This is a problematic design, because two threads can't safely operate on two different contexts.
+If you're performing some operations on thread 1, and in the meanwhile thread 2 changes the current
+context by calling `alcMakeContextCurrent` then it will change the behaviour of thread 1.
+
+There are work-arounds, but none of them is perfectly safe.
+
+So, there's just no solution. OpenAL cannot be wrapped safely.
+
+Many libraries have this kind of design and can be safely wrapped around, but some can't. Be aware
+of this.
 
 ---
 
 ## Mistake #5
 # Reading some primitives can cause undefined behaviour
 
-Concerned: `f32`s, `f64`s, `bool`s and `char`s
+.nastiness[<span style="color: #00BB00;">low</span>]
 
-Rules:
-- `bool`s must always be either `0` or `1` <small>(actually, this is unspecified)</small>.
-- `char`s must be a valid unicode scalar value</small>.
-- Floating-points must never contain signalling NaNs.
+Concerned: `f32`s, `f64`s, `bool`s and `char`s
 
 ```rust
 // can be undefined behaviour!
-let b: f32 = unsafe { mem::uninitialized() };
+let b: char = unsafe { mem::uninitialized() };
 
 // actually undefined behaviour (bad!)
 let b: f32 = unsafe { mem::transmute(0x7f800001) };
 ```
 
-Example situations:
-
-- Do not `transmute` a user-provided sequence of bytes.
-- Beware that mapped physical memory may become garbage.
+Rules:
+- `bool`s must always be either `0` or `1` <small>(actually, this is unspecified)</small>.
+- `char`s must be a valid unicode scalar value</small>.
+- Floating-points must never contain signalling NaNs.
 
 ???
 
@@ -163,12 +196,12 @@ By extension, arrays and structs that contain these types are also concerned.
 
 You must make sure that these rules are enforced when you transmute.
 
-Mention Vulkan w.r.t physical memory becoming garbage.
-
 ---
 
 ## Mistake #6
 # Assuming that structs and enums have a certain layout
+
+.nastiness[<span style="color: #BBBB00;">medium</span>]
 
 Example:
 
@@ -197,17 +230,58 @@ The compiler will warn you if you try to call an external function with a struct
 `repr(C)`. But it won't warn you if you perform transmutes or pointer casts.
 
 ---
+class: center, middle
 
-# Advice #1: 
+Some advices about API design
 
-Leak-safety (aka. "pre-pooping your pants")
-Catching panics in variables
-Setting global variables provided by the C library and forgetting that multiple different versions of your library can run at the same time, or can be used together with other libraries that set the same global variables
-Relying on the fact that safe trait implementations (like PartialEq, Eq, Deref, ...) are bug-free, while they are not necessarily
-Panic safety
-Reading f32s/f64s (and bools and chars) from uninitialized memory can cause undefined behavior
-Casting from *const to *mut (although I need to read the exact rules for this one first)
-Transmuting from a non-repr(C) struct or assuming it has a certain layout
+---
+
+## Advice #1
+# Use lifetimes only for temporary objects
+
+*Situation:* the library requires that object `B` outlives object `A`.
+
+*What people sometimes do:* store a `&A` inside of `B`.
+
+```rust
+struct B<'a> {
+    parent: &'a A,
+}
+```
+
+---
+
+## Advice #1
+# Use lifetimes only for temporary objects
+
+*Situation:* the library requires that object `B` outlives object `A`.
+
+*What people sometimes do:* store a `&A` inside of `B`.
+
+```rust
+struct B<'a> {
+    parent: &'a A,
+}
+```
+
+Unfortunately, lifetimes are more restrictive than just "outlives".
+
+```rust
+struct HighLevelCode {
+    parent: A,
+    child: B<???>,      // impossible to write
+}
+```
+
+---
+
+## Advice #2
+# Don't try to write an easy-to-use API
+
+---
+
+## Advice #3
+# Don't be too strict in your trait requirements
 
 ---
 class: center, middle
@@ -216,6 +290,8 @@ class: center, middle
 
 **Read the rustonomicon: https://doc.rust-lang.org/nomicon/**
 
+If you feel overwhelmed, think about the fact that safe Rust protects against all these
+problems.
 
 ---
 class: center, middle
