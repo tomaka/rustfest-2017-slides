@@ -50,6 +50,10 @@ class: center, middle
 
 # Mistakes to avoid when writing a Rust wrapper around a C library
 
+A collection of mistakes people often make.
+<br />
+<small>And that I also made.<br /><small>In no precise order.</small></small>
+
 <div style="position: absolute; bottom: 5%; right: 5%;">
 .right[
     twitter.com/tomaka17 <img src="twitter.png" alt="Twitter" height="16" /><br />
@@ -59,51 +63,54 @@ class: center, middle
 
 ---
 
-# Introduction about safety
+## Mistake #1
+# Not catching panics in callbacks
 
-Functions in Rust, C, C++ have rules that must be respected.
+.nastiness[<span style="color: #00BB00;">low</span>]
 
-Differences between safe and unsafe languages:
+*Rule*: It is undefined behaviour to panic within a callback.<br />
+Example:
 
-<table>
-    <tr>
-        <th>Safe Rust</th>
-        <th>C, C++ and unsafe Rust</th>
-    </tr>
-    <tr>
-        <td>
-            <p>Everything is verified, either at runtime or compile-time.</p>
-            <p>If you don't respect these rules, at worse you will get a panic.</p>
-        </td>
-        <td>
-            <p>For optimization purposes, some rules are expected to be respected and are not
-                verified.
-            </p>
-            <p>If you don't respect these rules, you will get an <strong>undefined behaviour</strong>.</p>
-            <p>An undefined behaviour is <strong>never</strong> ok.</p>
-        </td>
-    </tr>
-</table>
+```rust
+extern "C" fn callback() {
+    panic!("Oops");     // Will likely segfault
+}
 
-Your wrapper is the link between the two worlds.
+c_library_set_callback(callback);
+```
 
-Its job is to perform the verifications (either at compile-time or runtime) that the C/C++
-libraries will not perform.
+Therefore this is dangerous:
 
+```rust
+extern "C" fn callback() {
+    dispatch_to_a_user_provided_function();
+}
+```
+
+If the user-provided function happens to panic, then your library will trigger an undefined
+behaviour.
 
 ---
 
-Example
+## Mistake #1
+# Not catching panics in callbacks
 
+.nastiness[<span style="color: #00BB00;">low</span>]
+
+Instead:
+
+```rust
+use std::panic;
+extern "C" fn callback() {
+    panic::catch_unwind(|| {
+        panic!("Oops");
+    });
+}
+```
 
 ---
-class: center, middle
 
-Looks simple, doesn't it?
-
----
-
-## Safety problem #1
+## Mistake #2
 # Assuming that trait implementations are bug-free
 
 .nastiness[<span style="color: #BBBB00;">medium</span>]
@@ -130,7 +137,7 @@ pub fn foo_wrapper<T>(array_arg: &T)
 
 ---
 
-## Safety problem #1
+## Mistake #2
 # Assuming that trait implementations are bug-free
 
 .nastiness[<span style="color: #BBBB00;">medium</span>]
@@ -162,7 +169,7 @@ foo_wrapper(&malicious);
 
 ---
 
-## Safety problem #1
+## Mistake #2
 # Assuming that trait implementations are bug-free
 
 .nastiness[<span style="color: #BBBB00;">medium</span>]
@@ -186,7 +193,7 @@ Ouch!
 
 ---
 
-## Safety problem #1
+## Mistake #2
 # Assuming that trait implementations are bug-free
 
 .nastiness[<span style="color: #BBBB00;">medium</span>]
@@ -198,62 +205,22 @@ In a real program, it could be an actual bug that becomes potentially exploitabl
 
 ---
 
-## Safety problem #2
-# Catching panics in callbacks
+## Mistake #3
+# Try to write a high-level API first
 
-.nastiness[<span style="color: #00BB00;">low</span>]
-
-*Rule*: It is undefined behaviour to panic within a callback.<br />
-Example:
-
-```rust
-extern "C" fn callback() {
-    panic!("Oops");     // Will likely segfault
-}
-
-c_library_set_callback(callback);
-```
-
-Therefore this is dangerous:
-
-```rust
-extern "C" fn callback() {
-    dispatch_to_a_user_provided_function();
-}
-```
-
-If the user-provided function happens to panic, then your library will trigger an undefined
-behaviour.
+People will complain about features of the C library that you don't expose.
 
 ---
 
-## Safety problem #2
-# Catching panics in callbacks
-
-.nastiness[<span style="color: #00BB00;">low</span>]
-
-Instead:
-
-```rust
-use std::panic;
-extern "C" fn callback() {
-    panic::catch_unwind(|| {
-        panic!("Oops");
-    });
-}
-```
-
----
-
-## Safety problem #2
+## Mistake #4
 # Leak safety
 
 .nastiness[<span style="color: #BB0000;">high</span>]
 
 ---
 
-## Safety problem #4
-# Hidden global variables
+## Mistake #5
+# Forgetting about hidden global variables
 
 .nastiness[<span style="color: #BBBB00;">medium</span>]
 
@@ -297,8 +264,47 @@ of this.
 
 ---
 
-## Safety problem #5
-# Reading some primitives can cause undefined behaviour
+## Mistake #6
+# Using lifetimes for long-lived objects
+
+*Situation:* the library requires that object `B` outlives object `A`.
+
+*What people sometimes do:* store a `&A` inside of `B`.
+
+```rust
+struct B<'a> {
+    parent: &'a A,
+}
+```
+
+---
+
+## Mistake #6
+# Using lifetimes for long-lived objects
+
+*Situation:* the library requires that object `B` outlives object `A`.
+
+*What people sometimes do:* store a `&A` inside of `B`.
+
+```rust
+struct B<'a> {
+    parent: &'a A,
+}
+```
+
+Unfortunately, lifetimes are more restrictive than just "outlives".
+
+```rust
+struct HighLevelCode {
+    parent: A,
+    child: B<???>,      // impossible to write
+}
+```
+
+---
+
+## Mistake #7
+# Reading primitives from memory without checking
 
 .nastiness[<span style="color: #00BB00;">low</span>]
 
@@ -325,7 +331,7 @@ You must make sure that these rules are enforced when you transmute.
 
 ---
 
-## Safety problem #6
+## Mistake #8
 # Assuming that structs and enums have a certain layout
 
 .nastiness[<span style="color: #BBBB00;">medium</span>]
@@ -357,58 +363,14 @@ The compiler will warn you if you try to call an external function with a struct
 `repr(C)`. But it won't warn you if you perform transmutes or pointer casts.
 
 ---
-class: center, middle
 
-Some advices about API design
-
----
-
-## Advice #1
-# Use lifetimes only for temporary objects
-
-*Situation:* the library requires that object `B` outlives object `A`.
-
-*What people sometimes do:* store a `&A` inside of `B`.
-
-```rust
-struct B<'a> {
-    parent: &'a A,
-}
-```
+## Mistake #9
+# Being too strict in your trait requirements
 
 ---
 
-## Advice #1
-# Use lifetimes only for temporary objects
-
-*Situation:* the library requires that object `B` outlives object `A`.
-
-*What people sometimes do:* store a `&A` inside of `B`.
-
-```rust
-struct B<'a> {
-    parent: &'a A,
-}
-```
-
-Unfortunately, lifetimes are more restrictive than just "outlives".
-
-```rust
-struct HighLevelCode {
-    parent: A,
-    child: B<???>,      // impossible to write
-}
-```
-
----
-
-## Advice #2
-# Don't try to write an easy-to-use API
-
----
-
-## Advice #3
-# Don't be too strict in your trait requirements
+## Mistake #10
+# Not using your own library
 
 ---
 class: center, middle
