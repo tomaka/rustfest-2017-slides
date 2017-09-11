@@ -29,6 +29,15 @@ body {
     left: 80%;
 }
 
+.remark-slide-content table {
+    border-collapse: collapse;
+}
+
+.remark-slide-content table td, .remark-slide-content table th {
+    border: 1px solid black;
+    padding: 0.5em;
+}
+
 .nastiness::before {
     content: "Nastiness: ";
 }
@@ -39,7 +48,7 @@ body {
      <textarea id="source">
 class: center, middle
 
-# Advices and common mistakes when writing your Rust wrapper around a C library
+# Mistakes to avoid when writing a Rust wrapper around a C library
 
 <div style="position: absolute; bottom: 5%; right: 5%;">
 .right[
@@ -50,28 +59,51 @@ class: center, middle
 
 ---
 
-# Introduction
+# Introduction about safety
 
-People write wrappers around C libraries.
+Functions in Rust, C, C++ have rules that must be respected.
 
-Rust has rules. When you call C code, you must enforce these rules yourself. Unfortunately people
-make mistakes when trying to enforce these rules.
+Differences between safe and unsafe languages:
+
+<table>
+    <tr>
+        <th>Safe Rust</th>
+        <th>C, C++ and unsafe Rust</th>
+    </tr>
+    <tr>
+        <td>
+            <p>Everything is verified, either at runtime or compile-time.</p>
+            <p>If you don't respect these rules, at worse you will get a panic.</p>
+        </td>
+        <td>
+            <p>For optimization purposes, some rules are expected to be respected and are not
+                verified.
+            </p>
+            <p>If you don't respect these rules, you will get an <strong>undefined behaviour</strong>.</p>
+            <p>An undefined behaviour is <strong>never</strong> ok.</p>
+        </td>
+    </tr>
+</table>
+
+Your wrapper is the link between the two worlds.
+
+Its job is to perform the verifications (either at compile-time or runtime) that the C/C++
+libraries will not perform.
+
 
 ---
 
-## Mistake #1
-# Leak safety
+Example
 
-.nastiness[<span style="color: #BB0000;">high</span>]
+
+---
+class: center, middle
+
+Looks simple, doesn't it?
 
 ---
 
-## Mistake #2
-# Catching panics in variables
-
----
-
-## Mistake #3
+## Safety problem #1
 # Assuming that trait implementations are bug-free
 
 .nastiness[<span style="color: #BBBB00;">medium</span>]
@@ -79,53 +111,148 @@ make mistakes when trying to enforce these rules.
 Try to spot the problem:
 
 ```rust
-fn foo<T: Deref<String>>(string_arg: &T) {
-    unsafe {
-        let mut vec = Vec::with_capacity(string_arg.len());
-        ptr::copy(string_arg.as_ptr(), vec.as_mut_ptr(),
-                  string_arg.len());
-        dst.set_len(string_arg.len());
+extern {
+    // `pointer` must be an array of `len` elements
+    fn foo(pointer: *const c_char, len: size_t);
+}
 
-        // ... do something with the Vec
+pub fn foo_wrapper<T>(array_arg: &T)
+    where T: Deref<[u8]>
+{
+    unsafe {
+        foo(
+            array_arg.as_ptr() as *const c_char,
+            array_arg.len()
+        );
     }
 }
 ```
 
-Hint:
-
-```rust
-let a = string_arg.len();
-let b = string_arg.len();
-// a == b ?
-```
-
 ---
 
-## Mistake #3
+## Safety problem #1
 # Assuming that trait implementations are bug-free
 
 .nastiness[<span style="color: #BBBB00;">medium</span>]
 
-What if I call `foo()` with a `MaliciousPointer`?
+What if I call `foo_wrapper()` with a `MaliciousPointer`?
 
 ```rust
 struct MaliciousPointer {
-    string1: String,
-    string2: String,
+    vec1: Vec<u8>,
+    vec2: Vec<u8>,
 }
 
 impl Deref for MaliciousPointer {
-    type Target = String;
-    fn deref(&self) -> &String {
-        if random() < 0.5 { &self.string1 }
-        else { &self.string2 }
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        if random() < 0.5 { &self.vec1 }
+        else { &self.vec2 }
     }
+}
+```
+
+```rust
+let malicious = MaliciousPointer {
+    vec1: vec![3, 8],
+    vec2: vec![12, 9, 37],
+};
+foo_wrapper(&malicious);
+```
+
+---
+
+## Safety problem #1
+# Assuming that trait implementations are bug-free
+
+.nastiness[<span style="color: #BBBB00;">medium</span>]
+
+What if I call `foo_wrapper()` with a `MaliciousPointer`?
+
+```rust
+pub fn foo_wrapper<T: Deref<[u8]>>(array_arg: &T) {
+    unsafe {
+        foo(
+            // could pass a pointer to the first Vec ...
+            array_arg.as_ptr() as *const c_char,
+            // ... but with the length of the second Vec
+            array_arg.len()
+        );
+    }
+}
+```
+
+Ouch!
+
+---
+
+## Safety problem #1
+# Assuming that trait implementations are bug-free
+
+.nastiness[<span style="color: #BBBB00;">medium</span>]
+
+Important to note:
+
+In this example, it was a *malicious* implementation of `Deref`.
+In a real program, it could be an actual bug that becomes potentially exploitable.
+
+---
+
+## Safety problem #2
+# Catching panics in callbacks
+
+.nastiness[<span style="color: #00BB00;">low</span>]
+
+*Rule*: It is undefined behaviour to panic within a callback.<br />
+Example:
+
+```rust
+extern "C" fn callback() {
+    panic!("Oops");     // Will likely segfault
+}
+
+c_library_set_callback(callback);
+```
+
+Therefore this is dangerous:
+
+```rust
+extern "C" fn callback() {
+    dispatch_to_a_user_provided_function();
+}
+```
+
+If the user-provided function happens to panic, then your library will trigger an undefined
+behaviour.
+
+---
+
+## Safety problem #2
+# Catching panics in callbacks
+
+.nastiness[<span style="color: #00BB00;">low</span>]
+
+Instead:
+
+```rust
+use std::panic;
+extern "C" fn callback() {
+    panic::catch_unwind(|| {
+        panic!("Oops");
+    });
 }
 ```
 
 ---
 
-## Mistake #4
+## Safety problem #2
+# Leak safety
+
+.nastiness[<span style="color: #BB0000;">high</span>]
+
+---
+
+## Safety problem #4
 # Hidden global variables
 
 .nastiness[<span style="color: #BBBB00;">medium</span>]
@@ -170,7 +297,7 @@ of this.
 
 ---
 
-## Mistake #5
+## Safety problem #5
 # Reading some primitives can cause undefined behaviour
 
 .nastiness[<span style="color: #00BB00;">low</span>]
@@ -198,7 +325,7 @@ You must make sure that these rules are enforced when you transmute.
 
 ---
 
-## Mistake #6
+## Safety problem #6
 # Assuming that structs and enums have a certain layout
 
 .nastiness[<span style="color: #BBBB00;">medium</span>]
