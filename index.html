@@ -52,7 +52,7 @@ class: center, middle
 
 A collection of mistakes people often make.
 <br />
-<small>And that I also made.<br /><small>In no precise order.</small></small>
+<small>And that I also made and still make.<br /><small>In no precise order.</small></small>
 
 <div style="position: absolute; bottom: 5%; right: 5%;">
 .right[
@@ -64,36 +64,26 @@ A collection of mistakes people often make.
 ---
 
 ## Mistake #1
-# Not catching panics in callbacks
+# Not catching Rust panics within callbacks called by the C library
 
 .nastiness[<span style="color: #00BB00;">low</span>]
 
-*Rule*: It is undefined behaviour to panic within a callback.<br />
-Example:
+`panic!` triggers unwinding, but C code is not designed to handle Rust panics.<br />
+
+This is dangerous:
 
 ```rust
-extern "C" fn callback() {
-    panic!("Oops");     // Will likely segfault
-}
-
-c_library_set_callback(callback);
-```
-
-Therefore this is dangerous:
-
-```rust
-extern "C" fn callback() {
+extern "C" fn my_callback() {
     dispatch_to_a_user_provided_function();
 }
-```
 
-If the user-provided function happens to panic, then your library will trigger an undefined
-behaviour.
+c_library_set_callback(my_callback);
+```
 
 ---
 
 ## Mistake #1
-# Not catching panics in callbacks
+# Not catching Rust panics within callbacks called by the C library
 
 .nastiness[<span style="color: #00BB00;">low</span>]
 
@@ -101,10 +91,15 @@ Instead:
 
 ```rust
 use std::panic;
-extern "C" fn callback() {
-    panic::catch_unwind(|| {
-        panic!("Oops");
+
+extern "C" fn my_callback() {
+    let result = panic::catch_unwind(|| {
+        dispatch_to_a_user_provided_function();
     });
+
+    match result {
+        // ...
+    }
 }
 ```
 
@@ -159,14 +154,6 @@ impl Deref for MaliciousPointer {
 }
 ```
 
-```rust
-let malicious = MaliciousPointer {
-    vec1: vec![3, 8],
-    vec2: vec![12, 9, 37],
-};
-foo_wrapper(&malicious);
-```
-
 ---
 
 ## Mistake #2
@@ -191,31 +178,126 @@ pub fn foo_wrapper<T: Deref<[u8]>>(array_arg: &T) {
 
 Ouch!
 
----
+???
 
-## Mistake #2
-# Assuming that trait implementations are bug-free
-
-.nastiness[<span style="color: #BBBB00;">medium</span>]
-
-Important to note:
-
+Important to note.
 In this example, it was a *malicious* implementation of `Deref`.
 In a real program, it could be an actual bug that becomes potentially exploitable.
 
 ---
 
 ## Mistake #3
-# Try to write a high-level API first
+# Trying to write a high-level API first
 
 People will complain about features of the C library that you don't expose.
+
+```rust
+extern {
+    // Creates objects, and fills `out` with their IDs.
+    fn create_objects(num_objects: usize, out: *mut i32);
+}
+
+pub struct Object(i32);
+impl Object {
+    pub fn new() -> Object {
+        let mut id = 0; create_objects(1, &mut id); Object(id)
+    }
+}
+```
+
+Outcome:
+
+<img src="complain.png" />
+
+---
+
+## Mistake #3
+# Trying to write a high-level API first
+
+Advice:
+
+- Write the closest-to-the-metal API possible while still remaining safe.
+- Add additional abstractions over this API afterwards.
+- Optimize the higher-level features if needed.
+
+```rust
+impl Object {
+    // Close to the metal
+    pub fn create_objects(num: usize)
+                          -> impl Iterator<Item = Object>
+    {
+        // ...
+    }
+
+    // Easy to use
+    pub fn new() -> Object {
+        Object::create_objects(1).next().unwrap()
+    }
+}
+```
 
 ---
 
 ## Mistake #4
-# Leak safety
+# Ignoring the problem of leak safety
 
 .nastiness[<span style="color: #BB0000;">high</span>]
+
+Spot the problem:
+
+```rust
+extern {
+    fn lock_foo(foo: *mut Foo);
+    fn unlock_foo(foo: *mut Foo);
+
+    // Must not be used while `Foo` is locked.
+    fn do_smth(foo: *mut Foo);
+}
+
+pub struct Foo { /* ... */ }
+impl Foo {
+    pub fn do_something(&mut self) { /* call do_smth */ }
+    pub fn lock(&mut self) -> FooLock { /* calls lock_foo */ }
+}
+
+pub struct FooLock<'a> { foo: &'a mut Foo }
+impl Drop for FooLock {
+    fn drop(&mut self) { /* calls unlock_foo */ }
+}
+```
+
+---
+
+## Mistake #4
+# Ignoring the problem of leak safety
+
+.nastiness[<span style="color: #BB0000;">high</span>]
+
+From the point of view of the user:
+
+```rust
+fn use_foo(foo: &mut Foo) {
+    let _lock = foo.lock();
+    //foo.do_something();     // compilation error
+}
+```
+
+This API is safe, right? 
+No, because you can bypass the borrow!
+
+```rust
+fn use_foo(foo: &mut Foo) {
+    {
+        let lock = foo.lock();
+        mem::forget(lock);
+    }
+
+    // foo is still locked at this point
+    foo.do_something();     // compiles and runs, but bad!
+}
+```
+
+Rule: Always consider that your destructors may not get called.
 
 ---
 
@@ -267,9 +349,12 @@ of this.
 ## Mistake #6
 # Using lifetimes for long-lived objects
 
-*Situation:* the library requires that object `B` outlives object `A`.
+Example situation:
 
-*What people sometimes do:* store a `&A` inside of `B`.
+- You create an object `B` that is a child of `A`.
+- The library requires that `A` is still alive at the time when you use `B`.
+
+Solution: store a `&A` inside of `B`.
 
 ```rust
 struct B<'a> {
@@ -345,7 +430,8 @@ struct Foo {
 }
 ```
 
-The compiler can optimize this struct's layout, and `a` may end up being **after** `b` in memory.
+The compiler can optimize this struct's layout, and `a` may even end up being **after** `b` in
+memory.
 
 Use `#[repr(C)]` to force the layout.
 
@@ -372,6 +458,9 @@ The compiler will warn you if you try to call an external function with a struct
 ## Mistake #10
 # Not using your own library
 
+Using your own library for a large project is the best way to find bugs and flaws in the API. It
+provides a giant test case.
+
 ---
 class: center, middle
 
@@ -381,6 +470,8 @@ class: center, middle
 
 If you feel overwhelmed, think about the fact that safe Rust protects against all these
 problems.
+
+Take inspiration from the API guidelines:<br />https://rust-lang-nursery.github.io/api-guidelines/
 
 ---
 class: center, middle
@@ -396,8 +487,8 @@ class: center, middle
 
 <div style="position: absolute; bottom: 5%; left: 5%;">
 .left[
-    <img src="patreon.svg" alt="Patreon.com" height="16" /> patreon.com/tomaka<br />
-    <small>(by the way, I'm looking for a job)</small>
+    <!--<img src="patreon.svg" alt="Patreon.com" height="16" /> patreon.com/tomaka<br />-->
+    <!--<small>(by the way, I'm looking for a job)</small>-->
 ]
 </div>
 
