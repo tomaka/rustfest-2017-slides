@@ -9,6 +9,10 @@ body {
     font-family: Verdana, Geneva, Tahoma, sans-serif;
 }
 
+.remark-slide-number {
+    visibility: hidden;
+}
+
 .remark-slide-content h1 {
     font-size: 1.4em;
     margin-bottom: 0.5em;
@@ -52,7 +56,7 @@ class: center, middle
 
 A collection of mistakes people often make.
 <br />
-<small>And that I also made and still make.<br /><small>In no precise order.</small></small>
+<small>And that I also made and still make.<br /><small>In no specific order.</small></small>
 
 <div style="position: absolute; bottom: 5%; right: 5%;">
 .right[
@@ -68,13 +72,13 @@ A collection of mistakes people often make.
 
 .nastiness[<span style="color: #00BB00;">low</span>]
 
-`panic!` triggers unwinding, but C code is not designed to handle Rust panics.<br />
+C code is not designed to handle Rust panics.<br />
 
 This is dangerous:
 
 ```rust
 extern "C" fn my_callback() {
-    dispatch_to_a_user_provided_function();
+    user_provided_function_that_may_panic();
 }
 
 c_library_set_callback(my_callback);
@@ -94,7 +98,7 @@ use std::panic;
 
 extern "C" fn my_callback() {
     let result = panic::catch_unwind(|| {
-        dispatch_to_a_user_provided_function();
+        user_provided_function_that_may_panic();
     });
 
     match result {
@@ -137,7 +141,7 @@ pub fn foo_wrapper<T>(array_arg: &T)
 
 .nastiness[<span style="color: #BBBB00;">medium</span>]
 
-What if I call `foo_wrapper()` with a `MaliciousPointer`?
+The user could create a type named `MaliciousPointer` and call `foo_wrapper` with it!
 
 ```rust
 struct MaliciousPointer {
@@ -161,13 +165,13 @@ impl Deref for MaliciousPointer {
 
 .nastiness[<span style="color: #BBBB00;">medium</span>]
 
-What if I call `foo_wrapper()` with a `MaliciousPointer`?
+The user could create a type named `MaliciousPointer` and call `foo_wrapper` with it!
 
 ```rust
 pub fn foo_wrapper<T: Deref<[u8]>>(array_arg: &T) {
     unsafe {
         foo(
-            // could pass a pointer to the first Vec ...
+            // could be a pointer to the first Vec ...
             array_arg.as_ptr() as *const c_char,
             // ... but with the length of the second Vec
             array_arg.len()
@@ -187,7 +191,7 @@ In a real program, it could be an actual bug that becomes potentially exploitabl
 ---
 
 ## Mistake #3
-# Trying to write a high-level API first
+# Trying to write a high-level abstraction first
 
 People will complain about features of the C library that you don't expose.
 
@@ -212,7 +216,7 @@ Outcome:
 ---
 
 ## Mistake #3
-# Trying to write a high-level API first
+# Trying to write a high-level abstraction first
 
 Advice:
 
@@ -253,14 +257,16 @@ extern {
     // Must not be used while `Foo` is locked.
     fn do_smth(foo: *mut Foo);
 }
+```
 
-pub struct Foo { /* ... */ }
-impl Foo {
+```rust
+pub struct FooWrapper { /* ... */ }
+impl FooWrapper {
     pub fn do_something(&mut self) { /* call do_smth */ }
     pub fn lock(&mut self) -> FooLock { /* calls lock_foo */ }
 }
 
-pub struct FooLock<'a> { foo: &'a mut Foo }
+pub struct FooLock<'a> { foo: &'a mut FooWrapper }
 impl Drop for FooLock {
     fn drop(&mut self) { /* calls unlock_foo */ }
 }
@@ -298,6 +304,10 @@ fn use_foo(foo: &mut Foo) {
 ```
 
 Rule: Always consider that your destructors may not get called.
+
+???
+
+There is a technique called "pre-pooping your pants".
 
 ---
 
@@ -349,12 +359,10 @@ of this.
 ## Mistake #6
 # Using lifetimes for long-lived objects
 
-Example situation:
+Example situation: a C library gives you two objects of type `A` and `B`, and states that `A` must
+outlive `B`.
 
-- You create an object `B` that is a child of `A`.
-- The library requires that `A` is still alive at the time when you use `B`.
-
-Solution: store a `&A` inside of `B`.
+The common solution: store a `&A` inside of `B`.
 
 ```rust
 struct B<'a> {
@@ -367,24 +375,20 @@ struct B<'a> {
 ## Mistake #6
 # Using lifetimes for long-lived objects
 
-*Situation:* the library requires that object `B` outlives object `A`.
-
-*What people sometimes do:* store a `&A` inside of `B`.
+However using a lifetime is more restrictive than just the concept of "outlives".
 
 ```rust
-struct B<'a> {
-    parent: &'a A,
-}
-```
-
-Unfortunately, lifetimes are more restrictive than just "outlives".
-
-```rust
+// Code written by someone trying to use your library
 struct HighLevelCode {
     parent: A,
     child: B<???>,      // impossible to write
 }
 ```
+
+Advice:
+
+- Only use lifetimes for temporary objects (such as locks or accessors).
+- Use `Arc`/`Rc` for dependencies between long-lived objects.
 
 ---
 
@@ -451,15 +455,11 @@ The compiler will warn you if you try to call an external function with a struct
 ---
 
 ## Mistake #9
-# Being too strict in your trait requirements
-
----
-
-## Mistake #10
 # Not using your own library
 
-Using your own library for a large project is the best way to find bugs and flaws in the API. It
-provides a giant test case.
+Using your own library for a large project is the best way to find bugs and flaws in the API.
+
+Having a large project that uses a library acts as a giant test suit.
 
 ---
 class: center, middle
@@ -488,7 +488,7 @@ class: center, middle
 <div style="position: absolute; bottom: 5%; left: 5%;">
 .left[
     <!--<img src="patreon.svg" alt="Patreon.com" height="16" /> patreon.com/tomaka<br />-->
-    <!--<small>(by the way, I'm looking for a job)</small>-->
+    <small><small>(by the way, I'm looking for a job)</small></small>
 ]
 </div>
 
