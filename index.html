@@ -23,16 +23,6 @@ body {
     margin-bottom: 0.2em;
 }
 
-.nastiness {
-    display: block;
-    font-family: 'Dosis', cursive;
-    font-size: 1.1em;
-    position: absolute;
-    transform: rotate(-7deg);
-    top: 4%;
-    left: 80%;
-}
-
 .remark-slide-content table {
     border-collapse: collapse;
 }
@@ -42,21 +32,17 @@ body {
     padding: 0.5em;
 }
 
-.nastiness::before {
-    content: "Nastiness: ";
-}
-
     </style>
   </head>
   <body>
      <textarea id="source">
 class: center, middle
 
-# Mistakes to avoid when writing a Rust wrapper around a C library
+# Top 9 most common mistakes to avoid when writing a Rust wrapper around a C library
 
-A collection of mistakes people often make.
+A collection of mistakes people often make when starting.
 <br />
-<small>And that I also made and still make.<br /><small>In no specific order.</small></small>
+<small>And that I also made.</small>
 
 <div style="position: absolute; bottom: 5%; right: 5%;">
 .right[
@@ -65,12 +51,46 @@ A collection of mistakes people often make.
 ]
 </div>
 
+???
+
+Hello everybody,
+
+My name is Pierre Krieger, and this talk is named "the top 9 most common mistakes to avoid when
+writing a Rust wrapper around a C library"
+
 ---
 
-## Mistake #1
-# Not catching Rust panics within callbacks called by the C library
+## What is a wrapper?
 
-.nastiness[<span style="color: #00BB00;">low</span>]
+Bridge between Rust and C.
+
+<center style="margin: 2em 0"><img src="wrapper.svg" alt="" /></center>
+
+Paradigm shift:
+
+- Safe vs not safe.
+- Different API styles.
+
+These differences can cause problems.
+
+???
+
+Before starting, we need to define what a wrapper is.
+
+What we call a wrapper here is simply a Rust library, but that acts as the bridge with a C library.
+The idea is that instead of invoking directly the functions from the C library, you instead use
+the functions of a wrapper, and this wrapper, in turn, invokes the C library. The advantage of
+doing so, is that the wrapper is here in order to handle safety and to provide a convenient API.
+
+But writing a wrapper is not really an easy thing to do, and the differences between Rust and C can
+lead to sublte problems. These problems are the subject of this talk.
+
+So here are the 9 most common mistakes people will usually make when writing a wrapper.
+
+---
+
+## Mistake #9
+# Not catching Rust panics within callbacks called by the C library
 
 C code is not designed to handle Rust panics.<br />
 
@@ -84,12 +104,24 @@ extern "C" fn my_callback() {
 c_library_set_callback(my_callback);
 ```
 
+???
+
+(1mn10)
+
+Mistake number 9. Not catching Rust panics within callbacks called by the C library.
+
+When your C library uses callbacks, one thing that can be easy to forget is that the C language is
+not capable of handling Rust panics. What this means is that if your callback panics, then your
+program will crash.
+
+The example code here is dangerous, because you don't know whether
+`user_provided_function_that_may_panic` will panic or not. And if it does panic, then it's your
+fault for not handling it.
+
 ---
 
-## Mistake #1
+## Mistake #9
 # Not catching Rust panics within callbacks called by the C library
-
-.nastiness[<span style="color: #00BB00;">low</span>]
 
 Instead:
 
@@ -107,323 +139,46 @@ extern "C" fn my_callback() {
 }
 ```
 
----
-
-## Mistake #2
-# Assuming that trait implementations are bug-free
-
-.nastiness[<span style="color: #BBBB00;">medium</span>]
-
-Try to spot the problem:
-
-```rust
-extern {
-    // `pointer` must be an array of `len` elements
-    fn foo(pointer: *const c_char, len: size_t);
-}
-
-pub fn foo_wrapper<T>(array_arg: &T)
-    where T: Deref<[u8]>
-{
-    unsafe {
-        foo(
-            array_arg.as_ptr() as *const c_char,
-            array_arg.len()
-        );
-    }
-}
-```
-
----
-
-## Mistake #2
-# Assuming that trait implementations are bug-free
-
-.nastiness[<span style="color: #BBBB00;">medium</span>]
-
-The user could create a type named `MaliciousPointer` and call `foo_wrapper` with it!
-
-```rust
-struct MaliciousPointer {
-    vec1: Vec<u8>,
-    vec2: Vec<u8>,
-}
-
-impl Deref for MaliciousPointer {
-    type Target = [u8];
-    fn deref(&self) -> &[u8] {
-        if random() < 0.5 { &self.vec1 }
-        else { &self.vec2 }
-    }
-}
-```
-
----
-
-## Mistake #2
-# Assuming that trait implementations are bug-free
-
-.nastiness[<span style="color: #BBBB00;">medium</span>]
-
-The user could create a type named `MaliciousPointer` and call `foo_wrapper` with it!
-
-```rust
-pub fn foo_wrapper<T: Deref<[u8]>>(array_arg: &T) {
-    unsafe {
-        foo(
-            // could be a pointer to the first Vec ...
-            array_arg.as_ptr() as *const c_char,
-            // ... but with the length of the second Vec
-            array_arg.len()
-        );
-    }
-}
-```
-
-Ouch!
-
 ???
 
-Important to note.
-In this example, it was a *malicious* implementation of `Deref`.
-In a real program, it could be an actual bug that becomes potentially exploitable.
+Instead, you should always use the `catch_unwind` function, as demonstrated here.
 
----
-
-## Mistake #3
-# Trying to write a high-level abstraction first
-
-People will complain about features of the C library that you don't expose.
-
-```rust
-extern {
-    // Creates objects, and fills `out` with their IDs.
-    fn create_objects(num_objects: usize, out: *mut i32);
-}
-
-pub struct Object(i32);
-impl Object {
-    pub fn new() -> Object {
-        let mut id = 0; create_objects(1, &mut id); Object(id)
-    }
-}
-```
-
-Outcome:
-
-<img src="complain.png" />
-
----
-
-## Mistake #3
-# Trying to write a high-level abstraction first
-
-Advice:
-
-- Write the closest-to-the-metal API possible while still remaining safe.
-- Add additional abstractions over this API afterwards.
-- Optimize the higher-level features if needed.
-
-```rust
-impl Object {
-    // Close to the metal
-    pub fn create_objects(num: usize)
-                          -> impl Iterator<Item = Object>
-    {
-        // ...
-    }
-
-    // Easy to use
-    pub fn new() -> Object {
-        Object::create_objects(1).next().unwrap()
-    }
-}
-```
-
----
-
-## Mistake #4
-# Ignoring the problem of leak safety
-
-.nastiness[<span style="color: #BB0000;">high</span>]
-
-Spot the problem:
-
-```rust
-extern {
-    fn lock_foo(foo: *mut Foo);
-    fn unlock_foo(foo: *mut Foo);
-
-    // Must not be used while `Foo` is locked.
-    fn do_smth(foo: *mut Foo);
-}
-```
-
-```rust
-pub struct FooWrapper { /* ... */ }
-impl FooWrapper {
-    pub fn do_something(&mut self) { /* call do_smth */ }
-    pub fn lock(&mut self) -> FooLock { /* calls lock_foo */ }
-}
-
-pub struct FooLock<'a> { foo: &'a mut FooWrapper }
-impl Drop for FooLock {
-    fn drop(&mut self) { /* calls unlock_foo */ }
-}
-```
-
----
-
-## Mistake #4
-# Ignoring the problem of leak safety
-
-.nastiness[<span style="color: #BB0000;">high</span>]
-
-From the point of view of the user:
-
-```rust
-fn use_foo(foo: &mut Foo) {
-    let _lock = foo.lock();
-    //foo.do_something();     // compilation error
-}
-```
-
-This API is safe, right? 
-No, because you can bypass the borrow!
-
-```rust
-fn use_foo(foo: &mut Foo) {
-    {
-        let lock = foo.lock();
-        mem::forget(lock);
-    }
-
-    // foo is still locked at this point
-    foo.do_something();     // compiles and runs, but bad!
-}
-```
-
-Rule: Always consider that your destructors may not get called.
-
-???
-
-There is a technique called "pre-pooping your pants".
-
----
-
-## Mistake #5
-# Forgetting about hidden global variables
-
-.nastiness[<span style="color: #BBBB00;">medium</span>]
-
-Example: *OpenAL*, a sound playback library.
-
-```rust
-extern {
-    // Sets the current context. Only one context can be current
-    // at any given time. All commands apply to the current context.
-    fn alcMakeContextCurrent(ctxt: *mut ALCcontext) -> ALCboolean;
-}
-```
-
-This is a global variable hidden inside the OpenAL library!
-
-This design is not thread-safe (at all). None of the possible work-arounds is perfectly safe.<br />
-*OpenAL* **cannot** be wrapped safely, because of its design.
-
-<hr />
-
-Other examples: OpenGL, POSIX signals, Xlib (`XSetErrorHandler`), ...
-
-???
-
-In order to use OpenAL, you first create what is called a "context" and set this context as
-current. Then all the functions that you call apply on the current context.
-
-If you think about it, the variable that stores the "current context" is essentially a global
-variable.
-
-This is a problematic design, because two threads can't safely operate on two different contexts.
-If you're performing some operations on thread 1, and in the meanwhile thread 2 changes the current
-context by calling `alcMakeContextCurrent` then it will change the behaviour of thread 1.
-
-There are work-arounds, but none of them is perfectly safe.
-
-So, there's just no solution. OpenAL cannot be wrapped safely.
-
-Many libraries have this kind of design and can be safely wrapped around, but some can't. Be aware
-of this.
-
----
-
-## Mistake #6
-# Using lifetimes for long-lived objects
-
-Example situation: a C library gives you two objects of type `A` and `B`, and states that `A` must
-outlive `B`.
-
-The common solution: store a `&A` inside of `B`.
-
-```rust
-struct B<'a> {
-    parent: &'a A,
-}
-```
-
----
-
-## Mistake #6
-# Using lifetimes for long-lived objects
-
-However using a lifetime is more restrictive than just the concept of "outlives".
-
-```rust
-// Code written by someone trying to use your library
-struct HighLevelCode {
-    parent: A,
-    child: B<???>,      // impossible to write
-}
-```
-
-Advice:
-
-- Only use lifetimes for temporary objects (such as locks or accessors).
-- Use `Arc`/`Rc` for dependencies between long-lived objects.
-
----
-
-## Mistake #7
-# Reading primitives from memory without checking
-
-.nastiness[<span style="color: #00BB00;">low</span>]
-
-Concerned: `f32`s, `f64`s, `bool`s and `char`s
-
-```rust
-// can be undefined behaviour!
-let b: char = unsafe { mem::uninitialized() };
-
-// actually undefined behaviour (bad!)
-let b: f32 = unsafe { mem::transmute(0x7f800001) };
-```
-
-Rules:
-- `bool`s must always be either `0` or `1` <small>(actually, this is unspecified)</small>.
-- `char`s must be a valid unicode scalar value</small>.
-- Floating-points must never contain signalling NaNs.
-
-???
-
-By extension, arrays and structs that contain these types are also concerned.
-
-You must make sure that these rules are enforced when you transmute.
+(pause)
 
 ---
 
 ## Mistake #8
-# Assuming that structs and enums have a certain layout
+# Not testing your wrapper on a large scale
 
-.nastiness[<span style="color: #BBBB00;">medium</span>]
+<span style="margin:3em 0;">&nbsp;</span>
+
+Using your own library for a large project is very useful:
+
+- Lets you find flaws in the API.
+- Acts as a giant test suit.
+
+???
+
+(1mn55)
+
+Mistake number 8. Not testing your wrapper on a large scale.
+
+Of course, that's more easily said than done. But using your wrapper in an actual real-life
+project is really a huge advantage.
+
+For example the best way to spot problems in the API of your wrapper is usually to use the advanced
+features of the C library, but advanced features are usually only needed during a large scale
+project. So if you don't have one, you may not spot these problems.
+
+Another advantage is that whenever you make a change in your wrapper, you can simply run the
+large-scale project as if it was a giant test suit.
+
+So don't be afraid to design your library at the same time as you use it.
+
+---
+
+## Mistake #7
+# Assuming that structs and enums have a certain layout
 
 Example:
 
@@ -449,17 +204,642 @@ struct Foo {
 
 ???
 
-The compiler will warn you if you try to call an external function with a struct that isn't
-`repr(C)`. But it won't warn you if you perform transmutes or pointer casts.
+(2mn35)
+
+Mistake number 7. Assuming that structs and enums have a certain memory layout.
+
+If you take this example, a struct named `Foo` with two fields named `a` and `b`, you may assume
+that `b` is after `a` in memory. In reality the compiler is free to optimize the struct's layout,
+even if that means that it needs to change the order of the fields in memory. Which means that `a`
+may in reality end up being after `b`.
+
+If you rely on the memory layout of a struct, you **must** mark it as `#[repr(C)]`, as shown here.
+
+Note that the compiler will warn you if you try to call an external function with a struct that
+isn't `repr(C)`. But it will not warn you if you perform transmutes or pointer casts.
 
 ---
 
-## Mistake #9
-# Not using your own library
+## Mistake #6
+# Trying to write a high-level abstraction first
 
-Using your own library for a large project is the best way to find bugs and flaws in the API.
+People will complain about features of the C library that you don't expose.
 
-Having a large project that uses a library acts as a giant test suit.
+```rust
+extern {
+    // Creates objects, and fills `out` with their IDs.
+    fn create_objects(num_objects: usize, out: *mut i32);
+}
+
+pub struct Object(i32);
+impl Object {
+    pub fn new() -> Object {
+        let mut id = 0; create_objects(1, &mut id); Object(id)
+    }
+}
+```
+
+Outcome:
+
+<img src="complain.png" />
+
+???
+
+(3mn30)
+
+Mistake number 6. Trying to write a high-level abstraction first.
+
+Let's take a look at the example here. The C library you're wrapping around provides a function
+named `create_objects`, which can create multiple objects at once.
+But in order to make this API more convenient, your Rust wrapper provides a struct named `Object`,
+and the `new` function creates a single object by invoking the C function.
+
+If you do this, at one moment or the other, what will most likely happen, is that someone will open
+an issue saying that they are calling `Object::new` repeatidely, and asking how they can create
+multiple objects at once instead. After all, the C library lets you do so, so why isn't your
+wrapper exposing this capability?
+
+There are two ways to handle this issue: either you let the issue sleep forever, or you address it
+and you lose time redesigning your library. In both cases, you're losing.
+
+---
+
+## Mistake #6
+# Trying to write a high-level abstraction first
+
+Advice:
+
+- Write the closest-to-the-metal API possible while still remaining safe.
+- Add additional abstractions over this API afterwards.
+- Optimize the higher-level features if needed.
+
+```rust
+impl Object {
+    // Close to the metal
+    pub fn create_objects(num: usize)
+                          -> impl Iterator<Item = Object>
+    {
+        // ...
+    }
+
+    // Easy to use
+    pub fn new() -> Object {
+        Object::create_objects(1).next().unwrap()
+    }
+}
+```
+
+???
+
+(4mn35)
+
+Instead, what I think you should do when you start writing a wrapper, is to start by writing an
+API that is as close to the C library as possible. Then, *over* this API, you add your own
+convenient API.
+
+For example here, the `create_objects` function makes it possible to create multiple objects at
+once, and mimics what the C library provides. But `create_objects` may be inconvenient to use, so
+in addition to this you also provide a `new` function that create a single object.
+
+Most people will most likely use the `new` function, but the people who need to be able to create
+multiple objects at once will be satisfied with `create_objects`.
+
+Of course in this example, everything's very simple. But this advice scales for even large
+wrappers. First writing an API that is as low-level as possible, will make the rest much easier.
+Definitely do that.
+
+---
+
+## Mistake #5
+# Ignoring the problem of leak safety
+
+Try to spot the problem:
+
+```rust
+extern {
+    fn lock_foo(foo: *mut Foo);
+    fn unlock_foo(foo: *mut Foo);
+
+    // Must not be used while `Foo` is locked.
+    fn do_smth(foo: *mut Foo);
+}
+```
+
+```rust
+pub struct FooWrapper { /* ... */ }
+impl FooWrapper {
+    pub fn do_something(&mut self) { /* call do_smth */ }
+    pub fn lock(&mut self) -> Lock { /* calls lock_foo */ }
+}
+
+pub struct Lock<'a> { foo: &'a mut FooWrapper }
+impl Drop for Lock {
+    fn drop(&mut self) { /* calls unlock_foo */ }
+}
+```
+
+???
+
+(5mn43)
+
+Mistake number 5. Ignoring the problem of leak safety.
+And I must warn you that things are going to get a bit more technical from now on.
+
+Let's take a look at this example. The C library provides a type named `Foo`, which isn't shown
+here, and three functions. One function to lock a `Foo`, one function to unlock a `Foo` after it's
+been locked, and one function named `do_something` that operates on a `Foo`. One important thing
+is that `do_something` must not be called on a `Foo` that is currently locked.
+
+Now let's examine the wrapper. The type named `FooWrapper` wraps around `Foo`. It exposes the
+`do_something` and the `lock` functions, which mimic the C library. But as you can see, locking the
+`Foo` returns a `Lock` object whose destructor unlocks the `Foo`. And one nice thing is that since
+the `Lock` holds an exclusive borrow of `FooWrapper`, we are guaranteed that the user *cannot* call
+`do_something` or `lock` on a `Foo` that is already locked.
+
+But now, a little game. I give you a few secondsn to try understand what the problem is with this
+design.
+
+(pause)
+
+---
+
+## Mistake #5
+# Ignoring the problem of leak safety
+
+This is how the wrapper is supposed to be used:
+
+```rust
+fn use_foo(foo: &mut FooWrapper) {
+    let _lock = foo.lock();
+    //foo.do_something();     // compilation error
+}
+```
+
+This API is safe, right? 
+No, because you can bypass the borrow!
+
+```rust
+fn use_foo(foo: &mut FooWrapper) {
+    {
+        let lock = foo.lock();
+        mem::forget(lock);
+    }
+
+    // foo is still locked at this point
+    foo.do_something();     // compiles and runs, but bad!
+}
+```
+
+Rule: Always consider that your destructors may not get called.
+
+???
+
+(7mn14)
+
+Ok, let's see what the problem is.
+
+You can see in the first block of code how the wrapper is supposed to be used. You have a
+`FooWrapper` and you lock it. If you try to call `do_something` while the lock is in place, then
+you will get a compilation error. This is because `do_something` requires an exclusive borrow of
+`FooWrapper`, but the lock already holds an exclusive borrow. And having two exclusive borrows at
+the same time is forbidden.
+
+At the end of function, the lock is dropped, and this unlocks the `Foo`.
+
+So this API must be safe, right? No because you can bypass the borrow by calling the `forget`
+function. This is demonstrated in the second block of code.
+
+When you call `forget`, the lock will simply stop existing and its destructors will not be called.
+The user will then be able to call `do_something`, even though the `Foo` is still locked from the
+point of view of the C library. And everything falls apart.
+
+---
+
+## Mistake #5
+# Ignoring the problem of leak safety
+
+Pre-pooping your pants:
+
+```rust
+pub struct FooWrapper {
+    foo: *mut Foo,
+    is_locked: bool,
+}
+impl FooWrapper {
+    pub fn do_something(&mut self) {
+        assert!(!self.is_locked); /* call do_smth */
+    }
+    pub fn lock(&mut self) -> Lock {
+        assert!(!self.is_locked);
+        self.is_locked = true;
+        /* call lock_foo */
+    }
+}
+impl Drop for Lock {
+    fn drop(&mut self) {
+        self.0.is_locked = false; /* call unlock_foo */
+    }
+}
+```
+
+???
+
+(8mn18)
+
+What you need to do in order to make this safe, is add a field named `is_locked` in your wrapper.
+This field checks at runtime whether the `Foo` is locked.
+
+This solution may look nasty to you, because we turned a compile-time check into a runtime check.
+However it's unfortunately the only solution if you want your wrapper to be safe.
+
+And this technique is named "pre-pooping your pants".
+
+---
+
+## Mistake #4
+# Forgetting about hidden global variables
+
+Example: *OpenAL*, a sound playback library.
+
+```rust
+extern {
+    // Sets the current context. Only one context can be current
+    // at any given time. All commands apply to the current context.
+    fn alcMakeContextCurrent(ctxt: *mut ALCcontext) -> ALCboolean;
+}
+```
+
+This is a global variable hidden inside the OpenAL library!
+
+This design is not thread-safe (at all). None of the possible work-arounds is perfectly safe.<br />
+*OpenAL* **cannot** be wrapped safely, because of its design.
+
+<hr />
+
+Other examples: OpenGL, POSIX signals, Xlib (`XSetErrorHandler`), ...
+
+???
+
+(8mn48)
+
+Mistake number 4. Forgetting about hidden global variables.
+
+And I'm going to take the example of the OpenAL library here. In order to use OpenAL, you first create
+what is called a "context" and then you set this context as current by calling the `alcMakeContextCurrent`
+function. Then once you've done so, all the other functions of OpenAL apply on the current context.
+
+If you think a bit about it, this concept of having a "current context" is essentially just a
+global variable, hidden inside the OpenAL library.
+
+This is a problematic design, because two threads can't safely operate on two different contexts.
+If you're performing some operations on thread 1, and in the meanwhile thread 2 changes the current
+context then it will change the behaviour of thread 1.
+
+There are work-arounds you may think about, but none of them is perfectly safe. For example using
+a mutex unfortunately doesn't make it safer.
+
+In the end, there's just no solution. OpenAL simply cannot be wrapped safely.
+
+Many libraries have this kind of design, and some can be safely wrapped around, but some cannot.
+Be aware of this.
+
+---
+
+## Mistake #3
+# Reading primitives from memory without checking
+
+Concerned: `f32`s, `f64`s, `bool`s and `char`s
+
+```rust
+// can be undefined behaviour!
+let b: bool = unsafe { mem::uninitialized() };
+
+// actually undefined behaviour (bad!)
+// 0x7f800001 is a bit pattern corresponding to a signalling NaN
+let b: f32 = unsafe { mem::transmute(0x7f800001) };
+```
+
+Rules:
+- `bool`s must always be either `0` or `1` <small>(actually, this is unspecified)</small>.
+- `char`s must be a valid unicode scalar value</small>.
+- Floating-points must never contain signalling NaNs.
+
+???
+
+(10mn20)
+
+Mistake number 3. Reading primitives from memory without checking.
+
+This concerns the situation where you have a pointer to some memory, like a void pointer for
+example, and you would like to read data from it.
+
+If you're reading a floating point, a boolean, or a char, then you have to be sure that the
+content of the memory is valid for that given type. For example for bools, the memory must
+contain either `0` or `1`, and nothing else. If the memory happens to contain something else, and
+you read it, then you have an undefined behaviour, which can even make the program crash.
+
+When it comes to chars, the value must be a valid unicode scalar value. And when it comes to
+floating points, the value must not correspond to a signalling NaN.
+
+And by extension, structs that are made of these types are also concerned.
+
+---
+
+## Mistake #3
+# Reading primitives from memory without checking
+
+How to check:
+
+- Use `f32::from_bits` or `f64::from_bits` when reading a floating-point.
+- Instead of reading a `bool`, read an integer `a` and do `a != 0`.
+- For `char`, use `std::char::from_u32`.
+
+???
+
+(11mn20)
+
+Here is how to solve this problem.
+
+Use `from_bits` function when reading a floating-point.
+
+Instead of reading a `bool`, read an integer `a` and do `a != 0`.
+
+And for `char`, use the `from_u32` function.
+
+---
+
+## Mistake #2
+# Assuming that trait implementations are bug-free
+
+Try to spot the problem:
+
+```rust
+extern {
+    // `pointer` must be an array of `len` elements
+    fn foo(pointer: *const c_char, len: size_t);
+}
+
+pub fn foo_wrapper<T>(array_arg: &T)
+    where T: Deref<[u8]>
+{
+    unsafe {
+        foo(
+            array_arg.as_ptr() as *const c_char,
+            array_arg.len()
+        );
+    }
+}
+```
+
+???
+
+(11mn47)
+
+Mistake number 2. Assuming that trait implementations are bug-free.
+
+This one can be really tricky.
+
+Let's take a look. We have a C function named `foo`, which accepts an array that consists of a
+pointer and a number of elements.
+
+Below you can see the `foo_wrapper` function, which is our attempt to wrap around `foo`. It accepts
+any type that dereferences to an array, then calls the `as_ptr` and `len` methods on this array,
+which return what we need in order to call `foo`. And then it calls `foo`.
+
+I'll give you a few seconds in order to try to guess what is wrong with this code.
+
+(pause)
+
+---
+
+## Mistake #2
+# Assuming that trait implementations are bug-free
+
+The user could create a type named `MaliciousPointer` and call `foo_wrapper` with it!
+
+```rust
+struct MaliciousPointer {
+    vec1: Vec<u8>,
+    vec2: Vec<u8>,
+}
+
+impl Deref for MaliciousPointer {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        if random() < 0.5 { &self.vec1 }
+        else { &self.vec2 }
+    }
+}
+```
+
+???
+
+(12mn30)
+
+Here is the solution. The `foo_wrapper` function accepts as parameter any type that implements
+the `Deref` trait. Which means that we can create our own type that implements `Deref`, and then
+pass it to `foo_wrapper`.
+
+Take a look at this code. We have a struct named `MaliciousPointer` that consists of two `Vec`,
+and that implements `Deref` in such a way, that it will sometimes return the first `Vec` and
+sometimes return the second `Vec`.
+
+Now take a look at what happens if we use it.
+
+---
+
+## Mistake #2
+# Assuming that trait implementations are bug-free
+
+The user could create a type named `MaliciousPointer` and call `foo_wrapper` with it!
+
+```rust
+pub fn foo_wrapper<T: Deref<[u8]>>(array_arg: &T) {
+    unsafe {
+        foo(
+            // could be a pointer to the first Vec ...
+            array_arg.as_ptr() as *const c_char,
+            // ... but with the length of the second Vec
+            array_arg.len()
+        );
+    }
+}
+```
+
+Ouch!
+
+???
+
+(13mn)
+
+Here is our `foo_wrapper` function, the same as above.
+
+When we call `array_arg.as_ptr()`, what happens is that we actually first call `deref`, and then
+only `as_ptr` on the result of `deref`. Similarly when we call `array_arg.len()`, we call `deref`
+again, and then `len` on the result of the second `deref`.
+
+If we pass a `MaliciousPointer` as parameter, what can end up happening is that we obtain a pointer
+to the first `Vec` with the length of the second `Vec`, or vice-versa. Which could lead to a
+segfault.
+
+One important to note though. In this example, it was a *malicious* implementation of `Deref`.
+But in a real program, it could be an actual bug in the trait implementation that could be
+exploited.
+
+So, how do we solve this?
+
+---
+
+## Mistake #2
+# Assuming that trait implementations are bug-free
+
+Solution #1: deref at the start.
+
+```rust
+pub fn foo_wrapper<T: Deref<[u8]>>(array_arg: &T) {
+    unsafe {
+        let array_arg = array_arg.deref();
+        foo(array_arg.as_ptr() as *const c_char, array_arg.len());
+    }
+}
+```
+
+???
+
+(13mn50)
+
+The first solution to solve this, is to call `deref` at the start of the function.
+
+This code here is safe.
+
+(pause)
+
+---
+
+## Mistake #2
+# Assuming that trait implementations are bug-free
+
+Solution #2: a custom unsafe trait.
+
+```rust
+pub unsafe trait SafeDeref: Deref {}
+unsafe impl<T> SafeDeref for Arc<T> {}
+unsafe impl<T> SafeDeref for Box<T> {}
+
+pub fn foo_wrapper<T>(array_arg: &T)
+    where T: UnsafeDeref<[u8]>
+{
+    unsafe {
+        foo(
+            array_arg.as_ptr() as *const c_char,
+            array_arg.len()
+        );
+    }
+}
+```
+
+???
+
+(14mn02)
+
+But sometimes the first solution can be too constraining, so there's a second solution, which is
+to create your own alternative trait with an `unsafe` marker.
+
+This time the `foo_wrapper` function only accepts types which are guaranteed to implement `Deref`
+in a bug-free way. The safety is enforced by the two `unsafe impl` lines at the top.
+
+(pause)
+
+---
+
+## Mistake #2
+# Assuming that trait implementations are bug-free
+
+Other example traits to watch for and that can be implemented in a weird fashion:
+
+- `AsRef`
+- `Borrow`
+- `PartialEq`
+- `Eq`
+- `PartialOrd`
+- `Ord`
+- `Hash`
+
+???
+
+(14mn30)
+
+Here are some other traits to watch for, that could lead to safety problems.
+
+(read the list)
+
+---
+
+## Mistake #1
+# Using lifetimes for long-lived objects
+
+Example situation: a C library gives you two objects of type `A` and `B`, and states that `A` must
+outlive `B`.
+
+The common solution: store a `&A` inside of `B`.
+
+```rust
+struct B<'a> {
+    parent: &'a A,
+}
+```
+
+???
+
+(14mn42)
+
+And the top mistake. Using lifetimes for long-lived objects.
+
+Lots of C libraries provide objects that have a parent-child relationship, and state that you
+must keep the parent alive while you use the child.
+
+What many people do in this situation is use a lifetime to represent this relationship.
+In the example code here, the child, named `B`, holds a reference to its parent, named `A`.
+
+---
+
+## Mistake #1
+# Using lifetimes for long-lived objects
+
+However using a lifetime is more restrictive than just the concept of "outlives".
+
+```rust
+// Code written by someone trying to use your library
+struct HighLevelCode {
+    parent: A,
+    child: B<???>,      // impossible to write
+}
+```
+
+Advice:
+
+- Only use lifetimes for temporary objects (such as locks or accessors).
+- Use `Arc`/`Rc` for dependencies between long-lived objects.
+
+???
+
+(15mn07)
+
+However, lifetimes are more restrictive than just the concept of "outlives".
+
+When you have a reference to an object, it also enforces the fact that the object cannot be moved,
+which ends up being very annoying for the people who use your wrapper.
+
+If you take a look at the example code here, you can see that it's impossible to put both the
+parent and the child in the same struct. It should technically be possible to do this, but we can't
+because lifetimes are too restrictive.
+
+So what do we do?
+
+I advise you to use lifetimes only when you're dealing with temporary objects.
+
+In other situations, like in this example with `A` and `B`, you should simply use `Arc`s or
+`Rc`s.
 
 ---
 class: center, middle
@@ -468,10 +848,24 @@ class: center, middle
 
 **Read the rustonomicon: https://doc.rust-lang.org/nomicon/**
 
-If you feel overwhelmed, think about the fact that safe Rust protects against all these
-problems.
+If you feel overwhelmed by the safety-related issues, think about the fact that safe Rust protects
+against all these problems.
 
 Take inspiration from the API guidelines:<br />https://rust-lang-nursery.github.io/api-guidelines/
+
+???
+
+(15mn52)
+
+As a conclusion, if you're dealing with unsafe code, I think that you should read the rustonomicon,
+whose address is here.
+
+And if you're not manipulating unsafe code, and you feel overwhelmed by all the safety-related
+issues, remember that safe Rust protects you against all these problems. So you don't need to
+worry about them.
+
+Other than that, take inspiration from the API guidelines, which are also linked there. They are
+not perfect in my opinion, but they are a good starting place.
 
 ---
 class: center, middle
@@ -488,11 +882,13 @@ class: center, middle
 <div style="position: absolute; bottom: 5%; left: 5%;">
 .left[
     <!--<img src="patreon.svg" alt="Patreon.com" height="16" /> patreon.com/tomaka<br />-->
-    <small><small>(by the way, I'm looking for a job)</small></small>
+    <!--<small><small>(by the way, I'm looking for a job)</small></small>-->
 ]
 </div>
 
 ???
+
+(16mn16)
 
 That's it! Thank you!
 
