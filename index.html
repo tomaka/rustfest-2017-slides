@@ -42,7 +42,7 @@ class: center, middle
 
 A collection of mistakes people often make when starting.
 <br />
-<small>And that I also made.</small>
+<small>And that I also make.</small>
 
 <div style="position: absolute; bottom: 5%; right: 5%;">
 .right[
@@ -452,7 +452,7 @@ This field checks at runtime whether the `Foo` is locked.
 This solution may look nasty to you, because we turned a compile-time check into a runtime check.
 However it's unfortunately the only solution if you want your wrapper to be safe.
 
-And this technique is named "pre-pooping your pants".
+And this technique is named "pre-pooping your pants", if you want to google it.
 
 ---
 
@@ -471,12 +471,7 @@ extern {
 
 This is a global variable hidden inside the OpenAL library!
 
-This design is not thread-safe (at all). None of the possible work-arounds is perfectly safe.<br />
-*OpenAL* **cannot** be wrapped safely, because of its design.
-
-<hr />
-
-Other examples: OpenGL, POSIX signals, Xlib (`XSetErrorHandler`), ...
+This design is not thread-safe (at all).
 
 ???
 
@@ -491,17 +486,112 @@ function. Then once you've done so, all the other functions of OpenAL apply on t
 If you think a bit about it, this concept of having a "current context" is essentially just a
 global variable, hidden inside the OpenAL library.
 
-This is a problematic design, because two threads can't safely operate on two different contexts.
+This is a problematic design, because two threads cannot safely operate on two different contexts.
 If you're performing some operations on thread 1, and in the meanwhile thread 2 changes the current
-context then it will change the behaviour of thread 1.
+context then it will change the behaviour of thread 1. This is not thread safe.
 
-There are work-arounds you may think about, but none of them is perfectly safe. For example using
-a mutex unfortunately doesn't make it safer.
+---
 
-In the end, there's just no solution. OpenAL simply cannot be wrapped safely.
+## Mistake #4
+# Forgetting about hidden global variables
 
-Many libraries have this kind of design, and some can be safely wrapped around, but some cannot.
-Be aware of this.
+But what about a `Mutex`?
+
+```rust
+lazy_static! {
+    static ref CURRENT_CONTEXT_MUTEX: Mutex<()> = Mutex::new(());
+}
+
+pub fn do_something() {
+    let _lock = CURRENT_CONTEXT_MUTEX.lock().unwrap();
+    alcMakeContextCurrent(/* ... */);
+    // ...
+}
+```
+
+???
+
+(10mn20)
+
+But what if we used a mutex, to protect against this problem?
+
+The idea is, that every time we need to do something with OpenAL, we first lock a mutex and then
+only we call `alcMakeContextCurrent`. This way, if the user calls `do_something` multiple times
+from multiple different threads, then we're still safe.
+
+This must be safe, right? (short pause)
+
+---
+
+## Mistake #4
+# Forgetting about hidden global variables
+
+The `Mutex` solution doesn't work.
+
+Cargo may pull multiple different versions of our wrapper:
+
+```
+Project
+|- OpenAL-wrapper v0.2
+|- Other-sound-library v0.1
+   |- OpenAL-wrapper v0.1
+```
+
+If `Project` uses functions from `OpenAL-wrapper` and `Other-sound-library` simultaneously, they
+will each lock a different `Mutex`, but they will both still refer to the same "current context"
+in OpenAL.
+
+???
+
+(10mn48)
+
+Unfortunately, that's not a good solution. The solution with the mutex doesn't work. Here's why.
+
+Let's say that I create a project with two dependencies. The first dependency is the OpenAL
+wrapper, and the second dependency is a third-party sound library. And this third-party sound
+library also depends on the OpenAL wrapper under the hood, but a different version as the one used
+by the main project.
+
+What will happen if you do that, is that Cargo will pull the two different versions of the OpenAL
+wrapper. And unfortunately the two different versions will have two different mutexes. Which means
+that if the project uses, at the same time, a function from the OpenAL wrapper and a function from
+the third-party library, then they will conflict.
+
+---
+
+## Mistake #4
+# Forgetting about hidden global variables
+
+Conclusion: *OpenAL* **cannot** be wrapped safely, because of its design.
+
+Other examples of impossible APIs:
+
+- Xlib (because of `XSetErrorHandler`)
+- getenv/setenv (fortunately, the stdlib wraps around it)
+
+Examples of APIs that can be safely wrapped but where you need to be careful:
+
+- OpenGL
+- Several Windows APIs
+- All the libraries with a global initialization function
+- ...
+
+???
+
+(11mn50)
+
+As a conclusion, OpenAL simply cannot be wrapped safely. And that's because of its design.
+Or if you can, then I didn't figure out how. Let me know if you have an idea.
+
+Here are some other examples of libraries, that are impossible to wrap around safely. `getenv`
+and `setenv` have the same problem as explained, fortunately the stdlib wraps around them, and
+since there can only be one stdlib at a time in a program, then it's actually safe.
+
+In addition to libraries that are impossible to wrap around, there are also libraries that can be
+wrapped around but where you need to be extra careful. OpenGL has a concept of current context,
+but it only applies to the current thread. Some Windows APIs also have functions that modify
+a property of the current thread. There are really tons of C libraries that have some sort of
+hidden global variables. So be careful.
 
 ---
 
@@ -526,7 +616,7 @@ Rules:
 
 ???
 
-(10mn20)
+(12mn10)
 
 Mistake number 3. Reading primitives from memory without checking.
 
@@ -556,7 +646,7 @@ How to check:
 
 ???
 
-(11mn20)
+(13mn10)
 
 Here is how to solve this problem.
 
@@ -593,7 +683,7 @@ pub fn foo_wrapper<T>(array_arg: &T)
 
 ???
 
-(11mn47)
+(13mn37)
 
 Mistake number 2. Assuming that trait implementations are bug-free.
 
@@ -634,7 +724,7 @@ impl Deref for MaliciousPointer {
 
 ???
 
-(12mn30)
+(14mn20)
 
 Here is the solution. The `foo_wrapper` function accepts as parameter any type that implements
 the `Deref` trait. Which means that we can create our own type that implements `Deref`, and then
@@ -670,7 +760,7 @@ Ouch!
 
 ???
 
-(13mn)
+(14mn50)
 
 Here is our `foo_wrapper` function, the same as above.
 
@@ -706,7 +796,7 @@ pub fn foo_wrapper<T: Deref<[u8]>>(array_arg: &T) {
 
 ???
 
-(13mn50)
+(15mn40)
 
 The first solution to solve this, is to call `deref` at the start of the function.
 
@@ -740,7 +830,7 @@ pub fn foo_wrapper<T>(array_arg: &T)
 
 ???
 
-(14mn02)
+(15mn52)
 
 But sometimes the first solution can be too constraining, so there's a second solution, which is
 to create your own alternative trait with an `unsafe` marker.
@@ -767,7 +857,7 @@ Other example traits to watch for and that can be implemented in a weird fashion
 
 ???
 
-(14mn30)
+(16mn20)
 
 Here are some other traits to watch for, that could lead to safety problems.
 
@@ -791,7 +881,7 @@ struct B<'a> {
 
 ???
 
-(14mn42)
+(16mn32)
 
 And the top mistake. Using lifetimes for long-lived objects.
 
@@ -823,7 +913,7 @@ Advice:
 
 ???
 
-(15mn07)
+(16mn57)
 
 However, lifetimes are more restrictive than just the concept of "outlives".
 
@@ -855,7 +945,7 @@ Take inspiration from the API guidelines:<br />https://rust-lang-nursery.github.
 
 ???
 
-(15mn52)
+(17mn42)
 
 As a conclusion, if you're dealing with unsafe code, I think that you should read the rustonomicon,
 whose address is here.
