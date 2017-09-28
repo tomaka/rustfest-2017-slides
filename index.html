@@ -220,6 +220,26 @@ isn't `repr(C)`. But it will not warn you if you perform transmutes or pointer c
 
 ---
 
+## Mistake #7
+# Assuming that structs and enums have a certain layout
+
+Sometimes found in Rust library:
+
+```rust
+let src: [u32; 2] = ...;
+// very dangerous!
+let dst: (u32, u32) = unsafe { mem::transmute(src) };
+```
+
+???
+
+(3mn30)
+
+Another example. You sometimes see people transmuting arrays into tuples, or vice-versa. This is
+a bad idea, for the same reasons.
+
+---
+
 ## Mistake #6
 # Trying to write a high-level abstraction first
 
@@ -245,7 +265,7 @@ Outcome:
 
 ???
 
-(3mn30)
+(3mn45)
 
 Mistake number 6. Trying to write a high-level abstraction first.
 
@@ -291,7 +311,7 @@ impl Object {
 
 ???
 
-(4mn35)
+(4mn50)
 
 Instead, what I think you should do when you start writing a wrapper, is to start by writing an
 API that is as close to the C library as possible. Then, *over* this API, you add your own
@@ -340,7 +360,7 @@ impl Drop for Lock {
 
 ???
 
-(5mn43)
+(5mn58)
 
 Mistake number 5. Ignoring the problem of leak safety.
 And I must warn you that things are going to get a bit more technical from now on.
@@ -394,7 +414,7 @@ Rule: Always consider that your destructors may not get called.
 
 ???
 
-(7mn14)
+(7mn29)
 
 Ok, let's see what the problem is.
 
@@ -444,7 +464,7 @@ impl Drop for Lock {
 
 ???
 
-(8mn18)
+(8mn33)
 
 What you need to do in order to make this safe, is add a field named `is_locked` in your wrapper.
 This field checks at runtime whether the `Foo` is locked.
@@ -475,7 +495,7 @@ This design is not thread-safe (at all).
 
 ???
 
-(8mn48)
+(9mn03)
 
 Mistake number 4. Forgetting about hidden global variables.
 
@@ -511,7 +531,7 @@ pub fn do_something() {
 
 ???
 
-(10mn20)
+(10mn35)
 
 But what if we used a mutex, to protect against this problem?
 
@@ -543,7 +563,7 @@ in OpenAL.
 
 ???
 
-(10mn48)
+(11mn03)
 
 Unfortunately, that's not a good solution. The solution with the mutex doesn't work. Here's why.
 
@@ -578,7 +598,7 @@ Examples of APIs that can be safely wrapped but where you need to be careful:
 
 ???
 
-(11mn50)
+(12mn05)
 
 As a conclusion, OpenAL simply cannot be wrapped safely. And that's because of its design.
 Or if you can, then I didn't figure out how. Let me know if you have an idea.
@@ -616,7 +636,7 @@ Rules:
 
 ???
 
-(12mn10)
+(12mn25)
 
 Mistake number 3. Reading primitives from memory without checking.
 
@@ -646,7 +666,7 @@ How to check:
 
 ???
 
-(13mn10)
+(13mn25)
 
 Here is how to solve this problem.
 
@@ -683,7 +703,7 @@ pub fn foo_wrapper<T>(array_arg: &T)
 
 ???
 
-(13mn37)
+(13mn52)
 
 Mistake number 2. Assuming that trait implementations are bug-free.
 
@@ -724,7 +744,7 @@ impl Deref for MaliciousPointer {
 
 ???
 
-(14mn20)
+(14mn35)
 
 Here is the solution. The `foo_wrapper` function accepts as parameter any type that implements
 the `Deref` trait. Which means that we can create our own type that implements `Deref`, and then
@@ -760,7 +780,7 @@ Ouch!
 
 ???
 
-(14mn50)
+(15mn05)
 
 Here is our `foo_wrapper` function, the same as above.
 
@@ -796,7 +816,7 @@ pub fn foo_wrapper<T: Deref<[u8]>>(array_arg: &T) {
 
 ???
 
-(15mn40)
+(15mn55)
 
 The first solution to solve this, is to call `deref` at the start of the function.
 
@@ -830,7 +850,7 @@ pub fn foo_wrapper<T>(array_arg: &T)
 
 ???
 
-(15mn52)
+(16mn07)
 
 But sometimes the first solution can be too constraining, so there's a second solution, which is
 to create your own alternative trait with an `unsafe` marker.
@@ -857,7 +877,7 @@ Other example traits to watch for and that can be implemented in a weird fashion
 
 ???
 
-(16mn20)
+(16mn35)
 
 Here are some other traits to watch for, that could lead to safety problems.
 
@@ -881,7 +901,7 @@ struct B<'a> {
 
 ???
 
-(16mn32)
+(16mn47)
 
 And the top mistake. Using lifetimes for long-lived objects.
 
@@ -913,7 +933,7 @@ Advice:
 
 ???
 
-(16mn57)
+(17mn12)
 
 However, lifetimes are more restrictive than just the concept of "outlives".
 
@@ -945,7 +965,7 @@ Take inspiration from the API guidelines:<br />https://rust-lang-nursery.github.
 
 ???
 
-(17mn42)
+(17mn57)
 
 As a conclusion, if you're dealing with unsafe code, I think that you should read the rustonomicon,
 whose address is here.
@@ -978,7 +998,7 @@ class: center, middle
 
 ???
 
-(16mn16)
+(18mn21)
 
 That's it! Thank you!
 
